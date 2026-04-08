@@ -1,0 +1,26 @@
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: concretios/ai-pr-reviewer@v1
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          context_depth: changed-files
+          submit_review_verdict: true
