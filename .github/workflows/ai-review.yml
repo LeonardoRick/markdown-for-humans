@@ -1,7 +1,10 @@
 name: AI Code Review
 
 on:
-  pull_request:
+  # pull_request_target runs the workflow from the BASE branch (main), not the
+  # fork. This gives it access to repository secrets while reviewing fork PRs.
+  # Safe here because the action only reads files, never executes repo code.
+  pull_request_target:
     types: [opened, synchronize, reopened]
 
 concurrency:
@@ -15,8 +18,11 @@ jobs:
       contents: read
       pull-requests: write
     steps:
+      # Checkout the PR's merge commit so the action sees the fork's changes.
+      # This is read-only context for the AI reviewer, no code is executed.
       - uses: actions/checkout@v4
         with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
           fetch-depth: 0
 
       - uses: concretios/ai-pr-reviewer@v1
