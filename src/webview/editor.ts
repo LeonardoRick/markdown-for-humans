@@ -21,6 +21,8 @@ import { Mermaid } from './extensions/mermaid';
 import { IndentedImageCodeBlock } from './extensions/indentedImageCodeBlock';
 import { SpaceFriendlyImagePaths } from './extensions/spaceFriendlyImagePaths';
 import { TabIndentation } from './extensions/tabIndentation';
+import { MultiLineJump } from './extensions/multiLineJump';
+import { initCustomCaret } from './customCaret';
 import { GitHubAlerts } from './extensions/githubAlerts';
 import { ImageEnterSpacing } from './extensions/imageEnterSpacing';
 import { MarkdownParagraph } from './extensions/markdownParagraph';
@@ -33,7 +35,14 @@ import {
   getPendingImageCount,
 } from './features/imageDragDrop';
 import { toggleTocOverlay } from './features/tocOverlay';
-import { toggleSearchOverlay } from './features/searchOverlay';
+import {
+  toggleSearchOverlay,
+  showSearchOverlay,
+  refocusSearchInput,
+  isSearchVisible,
+  searchNext,
+  searchPrevious,
+} from './features/searchOverlay';
 import { showLinkDialog } from './features/linkDialog';
 import { processPasteContent, parseFencedCode } from './utils/pasteHandler';
 import { copySelectionAsMarkdown } from './utils/copyMarkdown';
@@ -392,6 +401,7 @@ function initializeEditor(initialContent: string) {
 
     const editorInstance = new Editor({
       element: editorElement,
+      autofocus: 'start',
       extensions: [
         // Mermaid must be before CodeBlockLowlight to intercept mermaid code blocks
         Mermaid,
@@ -452,6 +462,8 @@ function initializeEditor(initialContent: string) {
         }),
         OrderedListMarkdownFix,
         TabIndentation, // Enable Tab/Shift+Tab for list indentation
+        MultiLineJump, // Ctrl+Arrow (5 lines), Ctrl+Cmd+Arrow (10 lines), fn+Arrow
+
         ImageEnterSpacing, // Handle Enter key around images and gap cursor
         Link.configure({
           openOnClick: false,
@@ -548,6 +560,22 @@ function initializeEditor(initialContent: string) {
     if (editorContainer && editorContainer.parentElement) {
       editorContainer.parentElement.insertBefore(formattingToolbar, editorContainer);
     }
+
+    // When the webview iframe regains focus (Cmd+P then Esc, Ctrl+1 to
+    // focus the editor group, tab switch back, etc.) VS Code hands focus
+    // to the <body>, not to the Tiptap editor. Forward it into the editor
+    // so the user can type immediately. Only refocus if activeElement
+    // isn't already something meaningful (like the find bar input).
+    window.addEventListener('focus', () => {
+      const active = document.activeElement;
+      if (!active || active === document.body) {
+        editorInstance.view.focus();
+      }
+    });
+
+    // Wider blue cursor overlay — hides the native 1px caret and renders
+    // a 3px fixed-position bar at the cursor position.
+    initCustomCaret();
 
     // Track editor focus state for toolbar and keep toolbar enabled while interacting with it
     const editorDom = editorInstance.view.dom;
@@ -667,13 +695,95 @@ function initializeEditor(initialContent: string) {
       }
 
       // Intercept Cmd/Ctrl+F for in-document search
-      if (isMod && e.key === 'f') {
+      if (isMod && e.key === 'f' && !e.shiftKey) {
         e.preventDefault();
         e.stopPropagation();
-        console.log('[MD4H] Search shortcut');
-        if (editor) {
-          toggleSearchOverlay(editor);
+        if (!editor) return;
+        // If overlay is already open, re-focus the input (don't toggle off).
+        // Matches VS Code: repeated Cmd+F keeps the widget focused.
+        if (isSearchVisible()) {
+          refocusSearchInput();
+        } else {
+          showSearchOverlay(editor);
         }
+        return;
+      }
+
+      // Cmd/Ctrl+G: next match. If the overlay isn't open, open it.
+      // Shift+Cmd/Ctrl+G: previous match — but ONLY when the overlay is
+      // already visible. Otherwise let the event propagate so VS Code's
+      // native Shift+Cmd+G (Source Control view) can handle it.
+      if (isMod && e.key.toLowerCase() === 'g') {
+        if (!editor) return;
+        if (e.shiftKey) {
+          if (!isSearchVisible()) return; // let VS Code handle it
+          e.preventDefault();
+          e.stopPropagation();
+          searchPrevious(editor);
+          return;
+        }
+        // Non-shift: open overlay if closed, else next match
+        e.preventDefault();
+        e.stopPropagation();
+        if (!isSearchVisible()) {
+          showSearchOverlay(editor);
+        } else {
+          searchNext(editor);
+        }
+        return;
+      }
+
+      // ── VS Code shortcut pass-through table ─────────────────────
+      // The webview iframe swallows these events so VS Code's native
+      // keybinding handler never fires. For each entry here we match
+      // on modifiers + physical key (e.code, which is layout- and
+      // Alt-proof — macOS Alt+. produces '≥' not '.'), then post a
+      // message to the extension host which runs the VS Code command
+      // with the document URI as its first arg.
+      //
+      // To add a new shortcut:
+      //   1. Find the VS Code command bound to the chord
+      //        grep 'ctrl+..' config/vscode/mac-keybindings.jsonc
+      //   2. Add a row to SHORTCUT_FORWARDS below.
+      //   3. Rebuild + reinstall — no devtools debugging needed.
+      const mods = {
+        ctrl: e.ctrlKey,
+        alt: e.altKey,
+        meta: e.metaKey,
+        shift: e.shiftKey,
+      };
+      const SHORTCUT_FORWARDS: Array<{ mods: typeof mods; code: string; commandId: string }> = [
+        {
+          mods: { ctrl: true, alt: true, meta: false, shift: false },
+          code: 'Period',
+          commandId: 'git.openChange',
+        },
+        {
+          mods: { ctrl: true, alt: true, meta: false, shift: false },
+          code: 'KeyM',
+          commandId: 'git.stage',
+        },
+        {
+          mods: { ctrl: true, alt: true, meta: true, shift: false },
+          code: 'KeyM',
+          commandId: 'git.unstage',
+        },
+      ];
+      const match = SHORTCUT_FORWARDS.find(
+        s =>
+          s.code === e.code &&
+          s.mods.ctrl === mods.ctrl &&
+          s.mods.alt === mods.alt &&
+          s.mods.meta === mods.meta &&
+          s.mods.shift === mods.shift
+      );
+      if (match) {
+        e.preventDefault();
+        e.stopPropagation();
+        vscode.postMessage({
+          type: 'runVSCodeCommand',
+          commandId: match.commandId,
+        });
         return;
       }
     };

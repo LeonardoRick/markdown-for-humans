@@ -373,7 +373,9 @@ export function createSearchOverlay(editor: Editor): HTMLElement {
 
     if (e.key === 'Escape') {
       e.preventDefault();
-      hideSearchOverlay(editor);
+      // Keep cursor on the current match instead of restoring the
+      // pre-search position — matches how most editors behave.
+      hideSearchOverlay(editor, false);
     } else if (e.key === 'Enter') {
       e.preventDefault();
       if (e.shiftKey) {
@@ -419,6 +421,23 @@ function focusSearchInput(selectText = true) {
     searchInput.select();
   }
 }
+
+/**
+ * Public helper to refocus the search input when the overlay is open.
+ * Used by Cmd+F when the overlay is already visible — instead of
+ * toggling off, we re-focus and re-select the text so the user can
+ * refine their query.
+ */
+export function refocusSearchInput(): void {
+  focusSearchInput();
+}
+
+/**
+ * Public wrappers for next/previous match so shortcuts outside the
+ * overlay (Cmd+G / Cmd+Shift+G) can drive navigation without the
+ * search input needing to be focused.
+ */
+export { goToNextMatch as searchNext, goToPreviousMatch as searchPrevious };
 
 /**
  * Show the search overlay

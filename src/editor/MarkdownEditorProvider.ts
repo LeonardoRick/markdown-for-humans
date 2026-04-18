@@ -10,6 +10,10 @@ import * as os from 'os';
 import { outlineViewProvider } from '../features/outlineView';
 import { setActiveWebviewPanel, getActiveWebviewPanel } from '../activeWebview';
 import { buildResizeBackupLocation, resolveBackupPathWithCollisionDetection } from './imageBackups';
+import {
+  wrapObsidianImagesForWebview,
+  unwrapObsidianImagesFromWebview,
+} from './obsidianImages';
 
 /**
  * Parse an image filename to extract source prefix
@@ -337,8 +341,12 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     // Track active panel
     setActiveWebviewPanel(webviewPanel);
 
-    // Send initial content to webview
-    this.updateWebview(document, webviewPanel.webview);
+    // DO NOT send initial content here — the webview hasn't loaded its
+    // script yet, so postMessage may be dropped. The 'ready' message
+    // handler (handleWebviewMessage) sends initial content once the
+    // webview signals it's ready. Sending here also populated
+    // lastWebviewContent, which caused the 'ready' handler's
+    // updateWebview to skip (no-op), leaving the panel blank on startup.
 
     // Listen for configuration changes and update webview
     const configChangeSubscription = vscode.workspace.onDidChangeConfiguration(e => {
@@ -405,8 +413,11 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       return;
     }
 
-    // Transform content for webview (wrap frontmatter in code block)
-    const transformedContent = this.wrapFrontmatterForWebview(currentContent);
+    // Transform content for webview:
+    //  1. Expand Obsidian wiki-link images ![[x.png]] → ![x.png](path)
+    //  2. Wrap YAML frontmatter in a fenced code block
+    const withObsidianImages = wrapObsidianImagesForWebview(currentContent, document.uri.fsPath);
+    const transformedContent = this.wrapFrontmatterForWebview(withObsidianImages);
 
     // Remember the ORIGINAL content (what we expect back from webview after unwrapping)
     // This prevents false dirty state when webview sends back unwrapped frontmatter
@@ -447,6 +458,19 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         // Trigger VS Code's save command
         vscode.commands.executeCommand('workbench.action.files.save');
         break;
+      case 'runVSCodeCommand': {
+        // Forward a shortcut from the webview to a VS Code command.
+        // Used for shortcuts VS Code's keybinding layer can't reach
+        // inside the webview iframe (e.g. git.openChange on Ctrl+Alt+.).
+        // Pass the document URI — most resource-scoped commands
+        // (git.openChange, git.openFile, etc.) need it because there
+        // is no "active text editor" when a custom editor has focus.
+        const commandId = message.commandId as string | undefined;
+        if (commandId) {
+          void vscode.commands.executeCommand(commandId, document.uri);
+        }
+        break;
+      }
       case 'ready': {
         // Webview is ready, send initial content and settings
         this.updateWebview(document, webview);
@@ -2426,8 +2450,12 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
    * @throws Never - errors are caught and shown to user
    */
   private async applyEdit(content: string, document: vscode.TextDocument): Promise<boolean> {
-    // Skip if content unchanged (avoid redundant edits)
-    const unwrappedContent = this.unwrapFrontmatterFromWebview(content);
+    // Unwrap in reverse order of wrap:
+    //  1. Unwrap the YAML frontmatter fenced block back to --- delimiters
+    //  2. Collapse standard-markdown images that point into the vault's
+    //     attachment folder back to ![[filename]] wiki-links (Obsidian)
+    const noFrontmatterWrap = this.unwrapFrontmatterFromWebview(content);
+    const unwrappedContent = unwrapObsidianImagesFromWebview(noFrontmatterWrap, document.uri.fsPath);
     if (unwrappedContent === document.getText()) {
       return true;
     }

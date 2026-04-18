@@ -26,14 +26,16 @@
     --md-focus: var(--vscode-focusBorder);
     --md-selection: var(--vscode-editor-selectionBackground);
   
-    /* Typography and layout */
-    --md-base-size: var(--vscode-editor-font-size, 14px);
+    /* Typography and layout — 16px base for more readable body text */
+    --md-base-size: 16px;
   
     line-height: 1.58;
     letter-spacing: -0.003em;
   
     color: var(--md-foreground);
     background-color: var(--md-background);
+    /* Caret color + width handled by custom overlay in customCaret.ts
+       (browsers don't expose caret width natively) */
   
     /* Smooth reading */
     min-height: 100vh;
