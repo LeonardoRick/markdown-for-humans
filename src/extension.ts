@@ -119,18 +119,30 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // Auto-switch .md text tabs to MFH. We react to `e.opened` (fresh
-  // tabs from "open file" actions) and run a one-shot scan at
-  // activation time (catches tabs restored from previous session).
-  // We do NOT react to `e.changed` — that fires on navigation /
-  // dirty / pin events and was the root cause of an earlier "raw
-  // tab closes when I click it" bug.
+  // Auto-switch .md text tabs to MFH.
+  //
+  // Preview tabs stay as raw text — forcing them to MFH triggers VS
+  // Code to focus the webview iframe and no workbench command we've
+  // tried can reliably undo it for custom editors. The compromise:
+  // arrow-nav / Space in the Explorer shows raw markdown in the
+  // preview, MFH takes over only once the user commits (pin).
+  //
+  // Pin detection uses `previewSeenUris`: a URI appears there after
+  // we observe it as a preview tab, and is consumed when it reappears
+  // as non-preview (the pin transition) — at which point we switch.
+  // Without this set we can't distinguish a genuine pin-after-preview
+  // from unrelated `e.changed` events (navigation/dirty/selection) or
+  // from the toggleEditor command opening a pinned raw-text tab, and
+  // those would thrash tabs back into MFH after the 800ms grace.
+  const previewSeenUris = new Set<string>();
+
   const maybeSwitch = (tab: vscode.Tab) => {
     const input = tab.input;
     if (!(input instanceof vscode.TabInputText)) return;
     if (input.uri.scheme !== 'file') return;
     const fsPath = input.uri.fsPath;
     if (!fsPath.endsWith('.md') && !fsPath.endsWith('.markdown')) return;
+    if (tab.isPreview) return;
 
     const column = tab.group.viewColumn;
     const uri = input.uri;
@@ -180,8 +192,46 @@ export function activate(context: vscode.ExtensionContext) {
         } catch { /* ignore */ }
       }
 
+      const uriOf = (t: vscode.Tab): string | undefined => {
+        const u = (t.input as { uri?: vscode.Uri } | undefined)?.uri;
+        return u?.toString();
+      };
+      // Prune closed URIs BEFORE the grace guard — toggleEditor
+      // closes the prior tab during its 800ms window, and if we
+      // skipped this cleanup during grace a preview-observed URI
+      // would stay in the set stale, causing a later `e.changed`
+      // on the toggled raw tab to thrash it back to MFH.
+      for (const tab of e.closed) {
+        const u = uriOf(tab);
+        if (u) previewSeenUris.delete(u);
+      }
+
       if (Date.now() < toggleInProgressUntil) return;
-      for (const tab of e.opened) maybeSwitch(tab);
+      for (const tab of e.opened) {
+        const u = uriOf(tab);
+        if (u && tab.isPreview && tab.input instanceof vscode.TabInputText) {
+          previewSeenUris.add(u);
+        }
+        maybeSwitch(tab);
+      }
+      // `e.changed` fires for many reasons (navigation, dirty, pin,
+      // toggleEditor's raw re-open). Only treat a change as a pin
+      // transition — and therefore a reason to switch to MFH — when
+      // we previously saw this URI in preview state. That excludes
+      // the toggleEditor case (its raw tab was never a preview) and
+      // all the other `e.changed` noise on already-raw tabs.
+      for (const tab of e.changed) {
+        const u = uriOf(tab);
+        if (!u) continue;
+        if (tab.isPreview && tab.input instanceof vscode.TabInputText) {
+          previewSeenUris.add(u);
+          continue;
+        }
+        if (!tab.isPreview && previewSeenUris.has(u)) {
+          previewSeenUris.delete(u);
+          maybeSwitch(tab);
+        }
+      }
     })
   );
 
