@@ -55,7 +55,14 @@
     word-wrap: break-word;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
-    margin: 10px 30px;
+    /* `--md-editor-width` is a percentage cap (40-100) set via the
+       toolbar Reading-width slider and persisted in localStorage. At
+       100 (default) the editor fills the pane; lower values shrink
+       and auto-center it Obsidian-style. */
+    max-width: calc(var(--md-editor-width, 100) * 1%);
+    /* Generous top gap so the first heading/paragraph doesn't sit
+       flush under the formatting toolbar. */
+    margin: 80px auto 10px;
   }
   
   /* ============================================
@@ -206,7 +213,10 @@
 
   .heading-fold-toggle:hover {
     opacity: 1 !important;
-    color: var(--md-foreground);
+    /* Accent purple under obsidian-dark (via --md-link-fg), matches
+       bullet-point and link colors. In other themes it'll track
+       whatever --md-link-fg resolves to. */
+    color: var(--md-link-fg);
   }
 
   /* When a section is collapsed, every top-level block between the
@@ -214,6 +224,95 @@
      via a node decoration. */
   .heading-folded {
     display: none;
+  }
+
+  /* Reading-width slider popup. Rendered imperatively from editor.ts
+     when the toolbar button is clicked. Anchored under the button. */
+  .width-control-popup {
+    position: fixed;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    background-color: var(--vscode-editorWidget-background, var(--md-subtle-bg));
+    border: 1px solid var(--md-border);
+    border-radius: 8px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+    font-size: 13px;
+    color: var(--md-foreground);
+  }
+  /* Custom slider — we gave up fighting Chromium's range-input
+     pseudo-element rendering inside VS Code webviews and painted
+     our own track + thumb as divs. The real <input type="range">
+     sits on top invisibly and handles keyboard/mouse interaction
+     natively; our JS mirrors its value into the visible divs. */
+  .slider-container {
+    position: relative;
+    width: 160px;
+    height: 16px;
+    display: inline-block;
+  }
+  .slider-track {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    right: 0;
+    height: 4px;
+    transform: translateY(-50%);
+    background: linear-gradient(
+      to right,
+      var(--md-link-fg) 0,
+      var(--md-link-fg) var(--slider-fill, 50%),
+      var(--md-border) var(--slider-fill, 50%),
+      var(--md-border) 100%
+    );
+    border-radius: 999px;
+    pointer-events: none;
+  }
+  .slider-thumb {
+    position: absolute;
+    top: 50%;
+    width: 16px;
+    height: 16px;
+    /* z-index above the invisible input overlay — otherwise some
+       VS Code default input styles can steal the visual space. */
+    z-index: 2;
+    transform: translate(-50%, -50%);
+    /* Body-text color hardcoded. `--md-foreground` is declared on
+       `.markdown-editor`, but this popup is attached to <body> so
+       the variable doesn't resolve here. */
+    background-color: #dcddde;
+    border-radius: 50%;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+    pointer-events: none;
+    /* `left` is set from JS as a percentage matching the input's
+       value-to-range mapping. */
+  }
+  .slider-container input[type="range"] {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    /* !important beats VS Code's default input-visibility rules
+       that can re-show the native thumb over our custom one. */
+    opacity: 0 !important;
+    background: transparent !important;
+    cursor: pointer;
+    z-index: 1;
+    /* Let click-to-jump still work on the hidden input. */
+  }
+  .width-control-value {
+    min-width: 2.2em;
+    text-align: center;
+    padding: 3px 8px;
+    border-radius: 6px;
+    background-color: var(--md-link-fg);
+    color: var(--md-background);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
   }
   
   /* ============================================
@@ -248,6 +347,20 @@
   .markdown-editor li {
     margin: 0.25em 0;
     line-height: 1.58;
+  }
+
+  /* Obsidian-style bullets: colored round dots using the link/accent
+     color (`--md-link-fg`). `::marker` is a modern CSS feature and
+     works in Chromium-based webviews (VS Code). Slightly larger than
+     the browser default for that hand-drawn-dot feel. */
+  .markdown-editor ul:not([data-type="taskList"]) > li::marker {
+    color: var(--md-link-fg);
+    font-size: 1.15em;
+  }
+
+  .markdown-editor ol > li::marker {
+    color: var(--md-link-fg);
+    font-weight: 600;
   }
   
   .markdown-editor li>p {
@@ -289,13 +402,80 @@
     padding-left: 1.5em;
   }
   
+  /* Obsidian-style task checkboxes: rounded-square outline that
+     fills with the accent purple and shows a white tick when
+     checked. `appearance: none` replaces the native control so we
+     can paint both states ourselves. */
   .markdown-editor input[type="checkbox"] {
+    -webkit-appearance: none;
+    appearance: none;
     cursor: pointer;
-    width: 1.1em;
-    height: 1.1em;
+    width: 1.3em;
+    height: 1.3em;
     margin: 0 0.6em 0 0.1em;
     vertical-align: middle;
     flex-shrink: 0;
+    position: relative;
+    box-sizing: border-box;
+    /* Darker default border — sits quietly in the layout instead of
+       competing with body text like the muted-gray variant did. */
+    border: 2px solid #4a4a4a;
+    border-radius: 4px;
+    background: transparent;
+    transition: background-color 0.1s ease, border-color 0.1s ease;
+  }
+
+  /* Hover on an UNCHECKED box: only the border tints purple, no
+     fill and no checkmark preview. Keeps the "not-done" state
+     visually distinct from the "about-to-complete" signal. */
+  .markdown-editor input[type="checkbox"]:not(:checked):hover {
+    border-color: var(--md-link-fg);
+  }
+
+  /* Keyboard focus ring — `appearance: none` stripped the native
+     one. `:focus-visible` keeps it off mouse interactions so the
+     visual design stays clean, while restoring tab-navigation
+     affordance for keyboard users. */
+  .markdown-editor input[type="checkbox"]:focus-visible {
+    outline: 2px solid var(--md-link-fg);
+    outline-offset: 2px;
+  }
+
+  /* Checked: filled with the darker purple + checkmark. */
+  .markdown-editor input[type="checkbox"]:checked {
+    background-color: #8a65d9;
+    border-color: #8a65d9;
+  }
+
+  /* Hover on a CHECKED box: slightly darker still — subtle
+     "warming" feedback, no brightness flip. */
+  .markdown-editor input[type="checkbox"]:checked:hover {
+    background-color: #7d58cc;
+    border-color: #7d58cc;
+  }
+
+  /* Tick mark — only rendered when the box is actually checked.
+     Dark gray matching the editor background so it reads as
+     cut-out against the purple fill. */
+  .markdown-editor input[type="checkbox"]:checked::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 45%;
+    width: 0.3em;
+    height: 0.55em;
+    border: solid #1e1e1e;
+    border-width: 0 0.15em 0.15em 0;
+    transform: translate(-50%, -50%) rotate(45deg);
+  }
+
+  /* Completed task: strikethrough + fade the content, keep the
+     checkbox itself at full opacity so the done-state stays
+     visually crisp. */
+  .markdown-editor ul[data-type="taskList"] li[data-checked="true"] > div {
+    text-decoration: line-through;
+    text-decoration-color: var(--md-muted);
+    opacity: 0.55;
   }
   
   /* ============================================
@@ -529,12 +709,14 @@
      ============================================ */
   
   .markdown-editor blockquote {
-    border-left: 3px solid var(--md-quote-border);
+    /* Obsidian-style: accent purple left border, default foreground
+       text (not muted), retain the subtle bg tint + italic. */
+    border-left: 3px solid var(--md-link-fg);
     background-color: var(--md-quote-bg);
     padding-left: 23px;
     margin: 1em 0;
     font-style: italic;
-    color: var(--md-muted);
+    color: var(--md-foreground);
     line-height: 1.58;
     position: relative;
   }

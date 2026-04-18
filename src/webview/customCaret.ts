@@ -62,52 +62,55 @@ export function initCustomCaret(
   }
 
   function update() {
-    // Try the DOM-native selection first (fast, accurate for typed
-    // positions). When it's empty — which happens after rapid focus
-    // transitions (Ctrl+1 repeat, Ctrl+0 ↔ Ctrl+N) because VS Code
-    // clears the iframe's DOM selection even though ProseMirror's
-    // state still has one — fall back to coords from ProseMirror.
+    // Priority: try ProseMirror's per-position coords FIRST — they
+    // work for any document position (including empty lines inside
+    // a code block, where the DOM-range approach returns a
+    // zero-height rect or points at the block's top-left corner).
+    // Fall back to window.getSelection() only when PM coords aren't
+    // available (e.g., getFallbackCoords not wired up yet).
     let left = 0;
     let top = 0;
     let height = 0;
     let haveRect = false;
     let usedFallback = false;
 
-    const sel = window.getSelection();
-    if (sel && sel.isCollapsed && sel.rangeCount > 0) {
-      const range = sel.getRangeAt(0);
-      const rect = range.getBoundingClientRect();
-      if (rect.height > 0) {
-        left = rect.left;
-        top = rect.top;
-        height = rect.height;
-        haveRect = true;
-      } else {
-        // Collapsed range at text-node boundary — use parent element.
-        const node = range.startContainer;
-        const el =
-          node.nodeType === Node.ELEMENT_NODE
-            ? (node as Element)
-            : (node as Text).parentElement;
-        if (el) {
-          const elRect = el.getBoundingClientRect();
-          const lh = parseFloat(getComputedStyle(el).lineHeight) || 20;
-          left = elRect.left;
-          top = elRect.top;
-          height = lh;
-          haveRect = true;
-        }
-      }
-    }
-
-    if (!haveRect && getFallbackCoords) {
+    if (getFallbackCoords) {
       const fb = getFallbackCoords();
-      if (fb) {
+      if (fb && fb.height > 0) {
         left = fb.left;
         top = fb.top;
         height = fb.height;
         haveRect = true;
         usedFallback = true;
+      }
+    }
+
+    if (!haveRect) {
+      const sel = window.getSelection();
+      if (sel && sel.isCollapsed && sel.rangeCount > 0) {
+        const range = sel.getRangeAt(0);
+        const rect = range.getBoundingClientRect();
+        if (rect.height > 0) {
+          left = rect.left;
+          top = rect.top;
+          height = rect.height;
+          haveRect = true;
+        } else {
+          // Collapsed range at text-node boundary — use parent element.
+          const node = range.startContainer;
+          const el =
+            node.nodeType === Node.ELEMENT_NODE
+              ? (node as Element)
+              : (node as Text).parentElement;
+          if (el) {
+            const elRect = el.getBoundingClientRect();
+            const lh = parseFloat(getComputedStyle(el).lineHeight) || 20;
+            left = elRect.left;
+            top = elRect.top;
+            height = lh;
+            haveRect = true;
+          }
+        }
       }
     }
 
@@ -143,6 +146,22 @@ export function initCustomCaret(
     if (!usedFallback) {
       const anchorNode = window.getSelection()?.anchorNode;
       if (!anchorNode || !editorEl.contains(anchorNode)) {
+        caret.style.display = 'none';
+        visible = false;
+        return;
+      }
+    } else {
+      // Fallback path: ProseMirror's selection head always lives
+      // inside the editor, so we can't use anchor-in-editor as the
+      // gate. Instead, suppress the caret when focus has clearly
+      // moved to a non-editor interactive element — e.g. the
+      // reading-width slider input, the find bar. Allowing `body`
+      // through preserves the "Ctrl+N flipped activeElement to
+      // body but user is still editing" case.
+      const active = document.activeElement;
+      const inEditor = !!active && editorEl.contains(active);
+      const isBody = active === document.body;
+      if (active && !inEditor && !isBody) {
         caret.style.display = 'none';
         visible = false;
         return;

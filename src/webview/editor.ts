@@ -618,15 +618,25 @@ function initializeEditor(initialContent: string, isPreview = false) {
     // clears the iframe's DOM selection but ProseMirror still knows
     // where the cursor should be.
     const customCaret = initCustomCaret(() => {
+      // Return coords at the ProseMirror selection head regardless
+      // of focus state — the outer update() in customCaret.ts gates
+      // visibility on document.hasFocus() + anchor-in-editor, so we
+      // don't need a redundant view.hasFocus() gate here. Dropping
+      // it fixes empty-code-block first-line positioning where
+      // `view.hasFocus()` can transiently be false.
       const view = editorInstance.view;
-      if (!view || !view.hasFocus()) return null;
-      const pos = view.state.selection.head;
-      const coords = view.coordsAtPos(pos);
-      return {
-        left: coords.left,
-        top: coords.top,
-        height: coords.bottom - coords.top,
-      };
+      if (!view) return null;
+      try {
+        const pos = view.state.selection.head;
+        const coords = view.coordsAtPos(pos);
+        return {
+          left: coords.left,
+          top: coords.top,
+          height: coords.bottom - coords.top,
+        };
+      } catch {
+        return null;
+      }
     });
 
     // Track editor focus state for toolbar and keep toolbar enabled while interacting with it
@@ -1523,6 +1533,142 @@ window.addEventListener('openSourceView', () => {
 // Handle settings button from toolbar -> open VS Code settings UI
 window.addEventListener('openExtensionSettings', () => {
   vscode.postMessage({ type: 'openExtensionSettings' });
+});
+
+// ── Reading-width control ───────────────────────────────────────
+// Slider popup anchored under the toolbar button. Value is a
+// percentage cap (40-100) on `.markdown-editor` max-width. 100 is
+// the default (fills the pane); lower values constrain + center
+// Obsidian-style. Persisted in localStorage so it sticks across
+// reloads and between MFH tabs (webview iframes on the same VS
+// Code origin share localStorage).
+const WIDTH_STORAGE_KEY = 'mfh-editor-width';
+const DEFAULT_WIDTH = 100;
+
+function readStoredWidth(): number {
+  try {
+    const raw = localStorage.getItem(WIDTH_STORAGE_KEY);
+    if (!raw) return DEFAULT_WIDTH;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) return DEFAULT_WIDTH;
+    return Math.min(100, Math.max(40, Math.round(parsed)));
+  } catch {
+    return DEFAULT_WIDTH;
+  }
+}
+
+function applyEditorWidth(value: number): void {
+  document.documentElement.style.setProperty('--md-editor-width', String(value));
+}
+
+// Apply saved width on first load — before the editor renders so
+// there's no flash of full-width layout.
+applyEditorWidth(readStoredWidth());
+
+let widthPopup: HTMLElement | null = null;
+function closeWidthPopup(): void {
+  if (widthPopup) {
+    widthPopup.remove();
+    widthPopup = null;
+    document.removeEventListener('mousedown', onOutsideClick, true);
+    document.removeEventListener('keydown', onPopupKey, true);
+  }
+}
+function onOutsideClick(e: MouseEvent): void {
+  if (!widthPopup) return;
+  const target = e.target as Node | null;
+  const anchor = document.querySelector('.width-control-button');
+  if (
+    target &&
+    (widthPopup.contains(target) || (anchor && anchor.contains(target)))
+  ) {
+    return;
+  }
+  closeWidthPopup();
+}
+function onPopupKey(e: KeyboardEvent): void {
+  if (e.key === 'Escape') closeWidthPopup();
+}
+
+window.addEventListener('openWidthControl', () => {
+  if (widthPopup) {
+    closeWidthPopup();
+    return;
+  }
+  const anchor = document.querySelector('.width-control-button') as HTMLElement | null;
+  if (!anchor) return;
+
+  const popup = document.createElement('div');
+  popup.className = 'width-control-popup';
+  popup.setAttribute('contenteditable', 'false');
+
+  // Custom slider: visible track + thumb divs, invisible input
+  // overlay for native interaction. Chromium's range-input pseudo-
+  // elements don't reliably render inside VS Code webviews, so we
+  // paint our own.
+  const sliderContainer = document.createElement('div');
+  sliderContainer.className = 'slider-container';
+
+  const track = document.createElement('div');
+  track.className = 'slider-track';
+
+  const thumb = document.createElement('div');
+  thumb.className = 'slider-thumb';
+
+  const slider = document.createElement('input');
+  slider.type = 'range';
+  slider.min = '40';
+  slider.max = '100';
+  slider.step = '1';
+  slider.value = String(readStoredWidth());
+
+  sliderContainer.append(track, thumb, slider);
+
+  const valueBadge = document.createElement('span');
+  valueBadge.className = 'width-control-value';
+  valueBadge.textContent = slider.value;
+
+  // Paint the filled portion of the track AND position the thumb.
+  // `--slider-fill` is a percentage the CSS gradient uses to split
+  // the track into purple (filled) and gray (remaining). Range is
+  // 40-100, so map value → (value-40) / (100-40) × 100. The thumb
+  // sits at the same percentage via `left`.
+  const paintFill = (value: number) => {
+    const pct = Math.round(((value - 40) / 60) * 100);
+    track.style.setProperty('--slider-fill', `${pct}%`);
+    thumb.style.left = `${pct}%`;
+  };
+  paintFill(Number(slider.value));
+
+  slider.addEventListener('input', () => {
+    const v = Number(slider.value);
+    valueBadge.textContent = String(v);
+    paintFill(v);
+    applyEditorWidth(v);
+    try {
+      localStorage.setItem(WIDTH_STORAGE_KEY, String(v));
+    } catch {
+      /* storage disabled — width still applies for this session */
+    }
+  });
+
+  popup.append(sliderContainer, valueBadge);
+  document.body.appendChild(popup);
+  widthPopup = popup;
+
+  // Center the popup under the button so it reads as anchored to
+  // the icon. Clamp to the viewport on tight screens.
+  const rect = anchor.getBoundingClientRect();
+  const top = rect.bottom + 6;
+  popup.style.top = `${top}px`;
+  const popupRect = popup.getBoundingClientRect();
+  const buttonCenter = rect.left + rect.width / 2;
+  const idealLeft = buttonCenter - popupRect.width / 2;
+  const clampedLeft = Math.max(8, Math.min(idealLeft, window.innerWidth - popupRect.width - 8));
+  popup.style.left = `${clampedLeft}px`;
+
+  document.addEventListener('mousedown', onOutsideClick, true);
+  document.addEventListener('keydown', onPopupKey, true);
 });
 
 // Apply a theme by toggling data-theme on <body>. `vscode` (or any

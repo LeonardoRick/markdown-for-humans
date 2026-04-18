@@ -642,6 +642,21 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
     { type: 'separator' },
     {
       type: 'button',
+      label: 'Reading width',
+      title: 'Reading width',
+      icon: { name: 'layout', fallback: '⇔' },
+      action: () => {
+        // editor.ts finds the anchor via the `.width-control-button`
+        // class — the dispatched action doesn't receive the click
+        // event, so we can't pass the element through.
+        window.dispatchEvent(new CustomEvent('openWidthControl'));
+      },
+      isActive: () => false,
+      className: 'width-control-button',
+    },
+    { type: 'separator' },
+    {
+      type: 'button',
       label: 'Export settings',
       title: 'Export settings',
       icon: { name: 'gear', fallback: '⚙' },
