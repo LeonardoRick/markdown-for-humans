@@ -616,6 +616,31 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
     },
     { type: 'separator' },
     {
+      type: 'dropdown',
+      label: 'Theme',
+      title: 'Color theme for the editor',
+      icon: { name: 'paintcan', fallback: '🎨' },
+      items: [
+        {
+          label: 'VS Code',
+          action: () => {
+            window.dispatchEvent(
+              new CustomEvent('updateThemeSetting', { detail: { theme: 'vscode' } })
+            );
+          },
+        },
+        {
+          label: 'Obsidian Dark',
+          action: () => {
+            window.dispatchEvent(
+              new CustomEvent('updateThemeSetting', { detail: { theme: 'obsidian-dark' } })
+            );
+          },
+        },
+      ],
+    },
+    { type: 'separator' },
+    {
       type: 'button',
       label: 'Export settings',
       title: 'Export settings',

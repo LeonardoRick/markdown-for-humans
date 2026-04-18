@@ -377,7 +377,8 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       if (
         e.affectsConfiguration('markdownForHumans.imageResize.skipWarning') ||
         e.affectsConfiguration('markdownForHumans.imagePath') ||
-        e.affectsConfiguration('markdownForHumans.imagePathBase')
+        e.affectsConfiguration('markdownForHumans.imagePathBase') ||
+        e.affectsConfiguration('markdownForHumans.theme')
       ) {
         const config = vscode.workspace.getConfiguration();
         const skipWarning = config.get<boolean>('markdownForHumans.imageResize.skipWarning', false);
@@ -386,11 +387,13 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
           'markdownForHumans.imagePathBase',
           'relativeToDocument'
         );
+        const theme = config.get<string>('markdownForHumans.theme', 'obsidian-dark');
         webviewPanel.webview.postMessage({
           type: 'settingsUpdate',
           skipResizeWarning: skipWarning,
           imagePath: imagePath,
           imagePathBase: imagePathBase,
+          theme,
         });
       }
     });
@@ -422,24 +425,35 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
   }
 
   /**
-   * Send document content to webview
-   * Skips update if it's from a recent webview edit (avoid feedback loop)
+   * Send document content to webview.
+   * Skips update if it's from a recent webview edit (avoid feedback
+   * loop). Pass `force=true` to bypass the skip — used from the
+   * 'ready' handler so a freshly-loaded webview always gets its
+   * initial content. Without the force path, a second panel opening
+   * the same .md file would find lastWebviewContent already cached
+   * from the first panel's send and render empty.
    */
-  private updateWebview(document: vscode.TextDocument, webview: vscode.Webview) {
+  private updateWebview(
+    document: vscode.TextDocument,
+    webview: vscode.Webview,
+    force = false
+  ) {
     const docUri = document.uri.toString();
     const lastEditTime = this.pendingEdits.get(docUri);
     const currentContent = document.getText();
 
-    // Skip update if content matches what we already sent from the webview
-    const lastSentContent = this.lastWebviewContent.get(docUri);
-    if (lastSentContent !== undefined && lastSentContent === currentContent) {
-      return;
-    }
+    if (!force) {
+      // Skip update if content matches what we already sent from the webview
+      const lastSentContent = this.lastWebviewContent.get(docUri);
+      if (lastSentContent !== undefined && lastSentContent === currentContent) {
+        return;
+      }
 
-    // Skip update if this change came from webview within last 100ms
-    // This prevents feedback loops while allowing external Git changes to sync
-    if (lastEditTime && Date.now() - lastEditTime < 100) {
-      return;
+      // Skip update if this change came from webview within last 100ms
+      // This prevents feedback loops while allowing external Git changes to sync
+      if (lastEditTime && Date.now() - lastEditTime < 100) {
+        return;
+      }
     }
 
     // Transform content for webview:
@@ -460,6 +474,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       'markdownForHumans.imagePathBase',
       'relativeToDocument'
     );
+    const theme = config.get<string>('markdownForHumans.theme', 'obsidian-dark');
 
     webview.postMessage({
       type: 'update',
@@ -467,6 +482,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       skipResizeWarning: skipWarning,
       imagePath: imagePath,
       imagePathBase: imagePathBase,
+      theme,
       // Tell the webview whether its tab is in preview mode (italic
       // title, set by Explorer arrow-nav / single-click). When true,
       // the editor skips autofocus + window-focus stealing so the
@@ -528,8 +544,12 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         break;
       }
       case 'ready': {
-        // Webview is ready, send initial content and settings
-        this.updateWebview(document, webview);
+        // Webview is ready, send initial content and settings.
+        // Force bypasses the `lastWebviewContent` skip so siblings
+        // (e.g. the same file open in a second tab group) don't
+        // render blank when the first panel already seeded the
+        // content cache for this URI.
+        this.updateWebview(document, webview, true);
         // Also send settings separately
         const config = vscode.workspace.getConfiguration();
         const skipWarning = config.get<boolean>('markdownForHumans.imageResize.skipWarning', false);
@@ -580,6 +600,18 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
           '@ext:concretio.markdown-for-humans'
         );
         break;
+      case 'updateTheme': {
+        // Persist the choice globally — onDidChangeConfiguration below
+        // picks it up and broadcasts settingsUpdate to all open webviews,
+        // so every MFH tab re-themes in sync.
+        const theme = message.theme as string | undefined;
+        if (theme === 'vscode' || theme === 'obsidian-dark') {
+          void vscode.workspace
+            .getConfiguration()
+            .update('markdownForHumans.theme', theme, vscode.ConfigurationTarget.Global);
+        }
+        break;
+      }
       case 'exportDocument':
         this.handleExportDocument(message, document);
         break;

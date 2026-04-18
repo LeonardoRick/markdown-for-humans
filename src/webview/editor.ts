@@ -15,21 +15,24 @@ import { Markdown } from '@tiptap/markdown';
 import { TableKit } from '@tiptap/extension-table';
 import { ListKit } from '@tiptap/extension-list';
 import Link from '@tiptap/extension-link';
-import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
+import { CodeBlockPrism } from './extensions/codeBlockPrism';
 import { CustomImage } from './extensions/customImage';
-import { lowlight } from 'lowlight';
 import { Mermaid } from './extensions/mermaid';
 import { IndentedImageCodeBlock } from './extensions/indentedImageCodeBlock';
 import { SpaceFriendlyImagePaths } from './extensions/spaceFriendlyImagePaths';
 import { TabIndentation } from './extensions/tabIndentation';
 import { MultiLineJump } from './extensions/multiLineJump';
+import { HeadingFold } from './extensions/headingFold';
 import { initCustomCaret } from './customCaret';
 import { GitHubAlerts } from './extensions/githubAlerts';
 import { ImageEnterSpacing } from './extensions/imageEnterSpacing';
 import { MarkdownParagraph } from './extensions/markdownParagraph';
 import { OrderedListMarkdownFix } from './extensions/orderedListMarkdownFix';
 import { createFormattingToolbar, createTableMenu, updateToolbarStates } from './BubbleMenuView';
-import { getEditorMarkdownForSync } from './utils/markdownSerialization';
+import {
+  disableHtmlEntityEncodingFor,
+  getEditorMarkdownForSync,
+} from './utils/markdownSerialization';
 import {
   setupImageDragDrop,
   hasPendingImageSaves,
@@ -85,34 +88,8 @@ import {
 // Import rename dialog to register global function
 import './features/imageRenameDialog';
 
-// Import common languages for syntax highlighting
-import javascript from 'highlight.js/lib/languages/javascript';
-import typescript from 'highlight.js/lib/languages/typescript';
-import python from 'highlight.js/lib/languages/python';
-import bash from 'highlight.js/lib/languages/bash';
-import json from 'highlight.js/lib/languages/json';
-import markdown from 'highlight.js/lib/languages/markdown';
-import css from 'highlight.js/lib/languages/css';
-import xml from 'highlight.js/lib/languages/xml';
-import sql from 'highlight.js/lib/languages/sql';
-import java from 'highlight.js/lib/languages/java';
-import go from 'highlight.js/lib/languages/go';
-import rust from 'highlight.js/lib/languages/rust';
-
-// Register languages with lowlight
-lowlight.registerLanguage('javascript', javascript);
-lowlight.registerLanguage('typescript', typescript);
-lowlight.registerLanguage('python', python);
-lowlight.registerLanguage('bash', bash);
-lowlight.registerLanguage('json', json);
-lowlight.registerLanguage('markdown', markdown);
-lowlight.registerLanguage('css', css);
-lowlight.registerLanguage('html', xml);
-lowlight.registerLanguage('xml', xml);
-lowlight.registerLanguage('sql', sql);
-lowlight.registerLanguage('java', java);
-lowlight.registerLanguage('go', go);
-lowlight.registerLanguage('rust', rust);
+// Prism language components are loaded inside codeBlockPrism.ts so
+// registration happens on module import — no manual setup needed here.
 
 // VS Code API type definitions
 type VsCodeApi = {
@@ -408,9 +385,9 @@ function initializeEditor(initialContent: string, isPreview = false) {
       // so the user can keep navigating from the Explorer.
       autofocus: isPreview ? false : 'start',
       extensions: [
-        // Mermaid must be before CodeBlockLowlight to intercept mermaid code blocks
+        // Mermaid must be before CodeBlockPrism to intercept mermaid code blocks
         Mermaid,
-        // Must be before CodeBlockLowlight to intercept indented "code" tokens containing images
+        // Must be before CodeBlockPrism to intercept indented "code" tokens containing images
         IndentedImageCodeBlock,
         // Fallback: treat standalone image lines with spaces in the path as images.
         SpaceFriendlyImagePaths,
@@ -421,7 +398,7 @@ function initializeEditor(initialContent: string, isPreview = false) {
             levels: [1, 2, 3, 4, 5, 6],
           },
           paragraph: false, // Disable default paragraph, using MarkdownParagraph instead
-          codeBlock: false, // Disable default CodeBlock, using CodeBlockLowlight instead
+          codeBlock: false, // Disable default CodeBlock, using CodeBlockPrism instead
           // Disable the inline code mark — we register a patched Code
           // below with excludes: '' so bold/italic can coexist with
           // code (upstream's "_" default strips other marks, breaking
@@ -442,14 +419,13 @@ function initializeEditor(initialContent: string, isPreview = false) {
         }),
         Code.extend({ excludes: '' }),
         MarkdownParagraph, // Custom paragraph with empty-paragraph filtering in renderMarkdown
-        CodeBlockLowlight.configure({
-          lowlight,
+        CodeBlockPrism.configure({
           HTMLAttributes: {
             class: 'code-block-highlighted',
           },
           defaultLanguage: 'plaintext',
-          enableTabIndentation: true, // Enable Tab key for indentation
-          tabSize: 2, // 2 spaces per tab (cleaner for markdown code blocks)
+          enableTabIndentation: true,
+          tabSize: 2,
         }),
         Markdown.configure({
           markedOptions: {
@@ -474,6 +450,7 @@ function initializeEditor(initialContent: string, isPreview = false) {
         OrderedListMarkdownFix,
         TabIndentation, // Enable Tab/Shift+Tab for list indentation
         MultiLineJump, // Ctrl+Arrow (5 lines), Ctrl+Cmd+Arrow (10 lines), fn+Arrow
+        HeadingFold, // Click chevron next to a heading to fold its section
 
         ImageEnterSpacing, // Handle Enter key around images and gap cursor
         Link.configure({
@@ -555,6 +532,13 @@ function initializeEditor(initialContent: string, isPreview = false) {
     });
 
     editor = editorInstance;
+
+    // Patch the MarkdownManager once so every serializer call site —
+    // onUpdate sync, copy-as-markdown, export, etc. — skips the HTML
+    // entity encoding @tiptap/markdown 3.22+ adds by default. `>` and
+    // `&` are valid in markdown prose and shouldn't become `&gt;` /
+    // `&amp;` on save OR on copy. See markdownSerialization.ts.
+    disableHtmlEntityEncodingFor(editorInstance);
 
     // Set initial content as markdown (Tiptap v3 requires explicit contentType)
     if (initialContent) {
@@ -1019,6 +1003,12 @@ window.addEventListener('message', (event: MessageEvent) => {
         if (typeof message.imagePathBase === 'string') {
           (window as any).imagePathBase = message.imagePathBase;
         }
+        // Apply theme — 'vscode' clears the attribute so inherited
+        // VS Code colors take over; any other value drives the
+        // matching data-theme CSS block in editor.css.
+        if (typeof message.theme === 'string') {
+          applyTheme(message.theme);
+        }
         // Initialize editor with first payload to seed undo history correctly
         if (!editor) {
           const isPreview = typeof message.isPreview === 'boolean' ? message.isPreview : false;
@@ -1043,6 +1033,9 @@ window.addEventListener('message', (event: MessageEvent) => {
         }
         if (typeof message.imagePathBase === 'string') {
           (window as any).imagePathBase = message.imagePathBase;
+        }
+        if (typeof message.theme === 'string') {
+          applyTheme(message.theme);
         }
         break;
       case 'imageResized': {
@@ -1530,6 +1523,27 @@ window.addEventListener('openSourceView', () => {
 // Handle settings button from toolbar -> open VS Code settings UI
 window.addEventListener('openExtensionSettings', () => {
   vscode.postMessage({ type: 'openExtensionSettings' });
+});
+
+// Apply a theme by toggling data-theme on <body>. `vscode` (or any
+// unknown value) clears the attribute so the default CSS block —
+// which inherits from `var(--vscode-*)` — takes over.
+function applyTheme(theme: string): void {
+  if (theme === 'vscode' || !theme) {
+    document.body.removeAttribute('data-theme');
+  } else {
+    document.body.setAttribute('data-theme', theme);
+  }
+}
+
+// Theme dropdown in the formatting toolbar dispatches this event.
+// Forward the choice to the extension host, which writes the setting
+// via ConfigurationTarget.Global and echoes it back in settingsUpdate.
+window.addEventListener('updateThemeSetting', (event: Event) => {
+  const detail = (event as CustomEvent<{ theme: string }>).detail;
+  if (detail?.theme) {
+    vscode.postMessage({ type: 'updateTheme', theme: detail.theme });
+  }
 });
 
 // Handle export document from toolbar button

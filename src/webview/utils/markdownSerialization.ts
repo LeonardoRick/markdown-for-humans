@@ -8,7 +8,37 @@ import type { Editor, JSONContent } from '@tiptap/core';
 
 type MarkdownManager = {
   serialize?: (json: JSONContent) => string;
+  /**
+   * @tiptap/markdown 3.22+ HTML-escapes `>`, `<`, and `&` in text
+   * on serialize (so `-> foo` becomes `-&gt; foo`). Those chars are
+   * valid in markdown body — blockquote markers, ampersand in prose,
+   * arrows — and shouldn't be encoded. We override this method to a
+   * pass-through for every manager instance on first touch.
+   */
+  encodeTextForMarkdown?: (text: string, node: unknown, parentNode?: unknown) => string;
+  __mfhNoEncodePatched?: boolean;
 };
+
+export function disableHtmlEntityEncoding(manager: MarkdownManager): void {
+  if (manager.__mfhNoEncodePatched) return;
+  manager.encodeTextForMarkdown = (text: string) => text;
+  manager.__mfhNoEncodePatched = true;
+}
+
+/**
+ * Apply the entity-encoding patch to the editor's markdown manager.
+ * Call this once after editor creation so every serializer caller
+ * (sync-on-edit, copy-as-markdown, export…) benefits — not only the
+ * ones that route through `getEditorMarkdownForSync`.
+ */
+export function disableHtmlEntityEncodingFor(editor: Editor): void {
+  const editorUnknown = editor as unknown as {
+    markdown?: MarkdownManager;
+    storage?: { markdown?: MarkdownManager };
+  };
+  const manager = editorUnknown.markdown || editorUnknown.storage?.markdown;
+  if (manager) disableHtmlEntityEncoding(manager);
+}
 
 function isMeaningfulInlineNode(node: JSONContent): boolean {
   if (!node || typeof node.type !== 'string') return false;
@@ -68,6 +98,13 @@ export function getEditorMarkdownForSync(editor: Editor): string {
     return getFallbackMarkdown();
   }
 
+  // Defensive: the patch is normally applied once at editor creation
+  // (see `disableHtmlEntityEncodingFor` in editor.ts). Calling again
+  // is idempotent via the __mfhNoEncodePatched flag, so this protects
+  // any future code path that reaches the serializer without going
+  // through editor.ts's init.
+  disableHtmlEntityEncoding(markdownManager);
+
   try {
     const normalizedJson = stripEmptyDocParagraphsFromJson(editor.getJSON());
     return fixBoldCodeSerialization(markdownManager.serialize(normalizedJson));
@@ -101,6 +138,13 @@ export function getEditorMarkdownForSync(editor: Editor): string {
  * is almost certainly a mis-serialized link+code combo — a legit
  * code span documenting markdown link syntax is rare, and users
  * writing such docs typically escape the brackets.
+ *
+ * Pattern 4 — fixed upstream in @tiptap/markdown >= 3.22. Earlier
+ * versions returned active marks in insertion (open) order from
+ * `findMarksToClose`/`findMarksToCloseAtEnd`, so a text span with
+ * [bold, code] serialized as `CODE**\`` instead of `CODE\`**`. We
+ * used to carry a patch-package fix for this; the upgrade made it
+ * obsolete. Leaving this note so the pattern isn't reintroduced.
  */
 export function fixBoldCodeSerialization(markdown: string): string {
   return markdown

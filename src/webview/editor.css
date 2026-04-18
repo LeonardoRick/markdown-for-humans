@@ -26,9 +26,21 @@
     --md-focus: var(--vscode-focusBorder);
     --md-selection: var(--vscode-editor-selectionBackground);
   
-    /* Typography and layout — 16px base for more readable body text */
-    --md-base-size: 16px;
-  
+    /* Typography — single knob (`--md-base-size`) controls everything.
+       Fenced code uses a derived `--md-code-size` 2px smaller to
+       compensate for monospace optics (SF Mono at 16px looks visually
+       heavier than the UI font at 16px — Obsidian drops code by the
+       same 2px for the same reason). If prose feels small, bump this
+       one value and the whole scale grows proportionally. */
+    --md-base-size: 20px;
+    --md-code-size: calc(var(--md-base-size) - 6px);
+    font-size: var(--md-base-size);
+    /* +100 weight over the 400 browser default — matches Obsidian's
+       slightly heavier body text. Headings inherit the browser's
+       built-in h1-h6 bold (700) and explicit bold marks keep their
+       font-weight: bold, so only regular prose picks this up. */
+    font-weight: 500;
+
     line-height: 1.58;
     letter-spacing: -0.003em;
   
@@ -46,6 +58,42 @@
     margin: 10px 30px;
   }
   
+  /* ============================================
+     Obsidian Dark theme — opt-in via
+     body[data-theme="obsidian-dark"]. Overrides the
+     --md-* variables with a fixed Obsidian-inspired
+     palette instead of inheriting from VS Code.
+     ============================================ */
+  body[data-theme="obsidian-dark"] .markdown-editor {
+    /* Obsidian's actual default dark palette — neutral cool gray,
+       no warm accents. Code keeps the same foreground as body text
+       (Obsidian style) so the overall tone stays pure gray. */
+    --md-foreground: #dcddde;
+    --md-background: #1e1e1e;
+    --md-border: #3b3b3b;
+
+    --md-muted: #999999;
+    --md-subtle-bg: #242424;
+    --md-hover-bg: #2a2a2a;
+
+    --md-code-bg: #2a2a2a;
+    --md-code-fg: var(--md-foreground);
+    --md-quote-border: #4a4a4a;
+    --md-quote-bg: #242424;
+    --md-link-fg: #a882ff;
+    --md-link-active-fg: #c3a5ff;
+
+    --md-focus: #a882ff;
+    --md-selection: #3d4554;
+  }
+
+  /* Paint the iframe canvas itself so the 30px horizontal margin on
+     .markdown-editor doesn't reveal VS Code's editor-background. */
+  html:has(body[data-theme="obsidian-dark"]),
+  body[data-theme="obsidian-dark"] {
+    background-color: #1e1e1e;
+  }
+
   .markdown-editor .ProseMirror {
     outline: none;
   }
@@ -67,35 +115,105 @@
     line-height: 1.25;
   }
   
+  /* Heading sizes match Obsidian's default scale (app.css vars
+     --h1-size through --h6-size). At 16px base: h1=29, h2=26,
+     h3=23, h4=20, h5=18, h6=16 — tighter than the upstream
+     defaults, which rendered too large. */
   .markdown-editor h1 {
-    font-size: calc(var(--md-base-size) * 2.4);
+    font-size: calc(var(--md-base-size) * 1.802);
   }
-  
+
   .markdown-editor h2 {
-    font-size: calc(var(--md-base-size) * 2);
+    font-size: calc(var(--md-base-size) * 1.602);
   }
-  
+
   .markdown-editor h3 {
-    font-size: calc(var(--md-base-size) * 1.6);
+    font-size: calc(var(--md-base-size) * 1.424);
   }
-  
+
   .markdown-editor h4 {
-    font-size: calc(var(--md-base-size) * 1.35);
+    font-size: calc(var(--md-base-size) * 1.266);
     line-height: 1.2;
   }
-  
+
   .markdown-editor h5 {
-    font-size: calc(var(--md-base-size) * 1.15);
+    font-size: calc(var(--md-base-size) * 1.125);
     line-height: 1.2;
   }
-  
+
   .markdown-editor h6 {
-    font-size: calc(var(--md-base-size) * 1.05);
+    font-size: var(--md-base-size);
     line-height: 1.2;
   }
   
   .markdown-editor :is(h1, h2, h3, h4, h5, h6) {
     margin: 0.75em 0 0.35em;
+    position: relative;
+  }
+
+  /* Heading-fold chevron. Lucide-style `chevron-right` SVG rendered
+     via a ProseMirror widget decoration in headingFold.ts — not part
+     of the document model. The SVG points right by default; the
+     expanded state rotates it 90° via CSS so the animation is smooth
+     and the render size stays stable. */
+  .heading-fold-toggle {
+    position: absolute;
+    /* Button size = icon (set by SVG rule below) + padding on all
+       sides. Bigger button + same padding ratio = bigger chevron. */
+    left: -2em;
+    top: 50%;
+    width: 2em;
+    height: 2em;
+    padding: 0.35em;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    /* Baseline correction: `top: 50%` + negative translate keeps
+       the chevron vertically centered on the heading regardless of
+       its size. Default state (expanded) points DOWN (90°). */
+    transform: translateY(-50%) rotate(90deg);
+    transform-origin: center;
+    color: var(--md-muted);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    user-select: none;
+    opacity: 0;
+    /* Only rotate + recolor on hover — no background-color change. */
+    transition:
+      transform 0.15s ease,
+      opacity 0.1s ease,
+      color 0.1s ease;
+  }
+
+  .heading-fold-toggle svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  /* Collapsed: chevron points right (0°, SVG's natural direction). */
+  .heading-fold-toggle.is-collapsed {
+    transform: translateY(-50%) rotate(0deg);
+    opacity: 1;
+  }
+
+  .markdown-editor :is(h1, h2, h3, h4, h5, h6):hover .heading-fold-toggle,
+  .heading-fold-toggle:focus-visible {
+    opacity: 0.7;
+  }
+
+  .heading-fold-toggle:hover {
+    opacity: 1 !important;
+    color: var(--md-foreground);
+  }
+
+  /* When a section is collapsed, every top-level block between the
+     heading and the next same-or-shallower heading gets this class
+     via a node decoration. */
+  .heading-folded {
+    display: none;
   }
   
   /* ============================================
@@ -105,7 +223,7 @@
   .markdown-editor p {
     margin: 0;
     line-height: 1.58;
-    font-size: calc(var(--md-base-size) * 1.2);
+    font-size: var(--md-base-size);
   }
   
   .markdown-editor p:first-child {
@@ -173,6 +291,11 @@
   
   .markdown-editor input[type="checkbox"] {
     cursor: pointer;
+    width: 1.1em;
+    height: 1.1em;
+    margin: 0 0.6em 0 0.1em;
+    vertical-align: middle;
+    flex-shrink: 0;
   }
   
   /* ============================================
@@ -184,7 +307,9 @@
     padding: 0.2em 0.2em;
     border-radius: 3px;
     font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
-    font-size: 90%;
+    /* 85% of the surrounding text — scales down proportionally
+       inside headings (heading × 0.85) and paragraphs (body × 0.85). */
+    font-size: 85%;
   }
   
   .markdown-editor pre {
@@ -194,7 +319,7 @@
     border-radius: 6px;
     overflow-x: auto;
     margin: 1em 0;
-    line-height: 1.5;
+    line-height: 1.35;
     position: relative;
   }
   
@@ -202,8 +327,9 @@
     background: none;
     padding: 0;
     color: inherit;
-    font-size: calc(var(--vscode-editor-font-size) * 0.95);
-  
+    /* `--md-code-size` is base - 2px — makes monospace visually
+       match the weight of proportional text at base size. */
+    font-size: var(--md-code-size);
   }
   
   /* Syntax highlighting - Code blocks */
@@ -215,228 +341,189 @@
     padding: 20px;
     margin: 1em 0;
     font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
-  
-    line-height: 1.5;
+
+    line-height: 1.35;
     overflow-x: auto;
   }
   
   /* ============================================
-     Syntax Highlighting - GitHub Theme (Light)
-     Official highlight.js GitHub theme colors
-     
-     NOTE: Colors are intentionally hardcoded here for consistent
-     syntax highlighting across all VS Code themes. These provide
-     semantic meaning (keywords, strings, comments) that work
-     regardless of the user's theme choice.
+     Syntax Highlighting — Prism.js token palette
+     We tokenize code with Prism (not highlight.js) because it
+     emits finer-grained classes (.token.keyword, .token.function,
+     .token.class-name, .token.imports, .token.property-access,
+     .token.parameter, .token.constant, …) which let us paint
+     const binding names, imported namespaces, and property
+     chains the way VS Code's "Atom One Dark" does.
+
+     Default fallback palette below is GitHub-Dark-ish so code
+     still reads fine when the user picks the "vscode" theme.
+     The Atom One Dark palette further down overrides it when
+     `body[data-theme="obsidian-dark"]` is active.
      ============================================ */
-  
-  .code-block-highlighted .hljs-doctag,
-  .code-block-highlighted .hljs-keyword,
-  .code-block-highlighted .hljs-meta .hljs-keyword,
-  .code-block-highlighted .hljs-template-tag,
-  .code-block-highlighted .hljs-template-variable,
-  .code-block-highlighted .hljs-type,
-  .code-block-highlighted .hljs-variable.language_ {
-    color: #d73a49;
-  }
-  
-  .code-block-highlighted .hljs-title,
-  .code-block-highlighted .hljs-title.class_,
-  .code-block-highlighted .hljs-title.class_.inherited__,
-  .code-block-highlighted .hljs-title.function_ {
-    color: #6f42c1;
-  }
-  
-  .code-block-highlighted .hljs-attr,
-  .code-block-highlighted .hljs-attribute,
-  .code-block-highlighted .hljs-literal,
-  .code-block-highlighted .hljs-meta,
-  .code-block-highlighted .hljs-number,
-  .code-block-highlighted .hljs-operator,
-  .code-block-highlighted .hljs-variable,
-  .code-block-highlighted .hljs-selector-attr,
-  .code-block-highlighted .hljs-selector-class,
-  .code-block-highlighted .hljs-selector-id {
-    color: #005cc5;
-  }
-  
-  .code-block-highlighted .hljs-regexp,
-  .code-block-highlighted .hljs-string,
-  .code-block-highlighted .hljs-meta .hljs-string {
-    color: #032f62;
-  }
-  
-  .code-block-highlighted .hljs-built_in,
-  .code-block-highlighted .hljs-symbol {
-    color: #e36209;
-  }
-  
-  .code-block-highlighted .hljs-comment,
-  .code-block-highlighted .hljs-code,
-  .code-block-highlighted .hljs-formula {
-    color: #6a737d;
-  }
-  
-  .code-block-highlighted .hljs-name,
-  .code-block-highlighted .hljs-quote,
-  .code-block-highlighted .hljs-selector-tag,
-  .code-block-highlighted .hljs-selector-pseudo {
-    color: #22863a;
-  }
-  
-  .code-block-highlighted .hljs-subst {
-    color: #24292e;
-  }
-  
-  .code-block-highlighted .hljs-section {
-    color: #005cc5;
-    font-weight: bold;
-  }
-  
-  .code-block-highlighted .hljs-bullet {
-    color: #735c0f;
-  }
-  
-  .code-block-highlighted .hljs-emphasis {
-    color: #24292e;
+
+  .code-block-highlighted .token.comment,
+  .code-block-highlighted .token.prolog,
+  .code-block-highlighted .token.doctype,
+  .code-block-highlighted .token.cdata {
+    color: #8b949e;
     font-style: italic;
   }
-  
-  .code-block-highlighted .hljs-strong {
-    color: #24292e;
-    font-weight: bold;
+
+  .code-block-highlighted .token.punctuation,
+  .code-block-highlighted .token.operator {
+    color: #c9d1d9;
   }
-  
-  .code-block-highlighted .hljs-addition {
-    color: #22863a;
-    background-color: #f0fff4;
-  }
-  
-  .code-block-highlighted .hljs-deletion {
-    color: #b31d28;
-    background-color: #ffeef0;
-  }
-  
-  .code-block-highlighted .hljs-char.escape_,
-  .code-block-highlighted .hljs-link,
-  .code-block-highlighted .hljs-params,
-  .code-block-highlighted .hljs-property,
-  .code-block-highlighted .hljs-punctuation,
-  .code-block-highlighted .hljs-tag {
-    color: #24292e;
-  }
-  
-  /* ============================================
-     Syntax Highlighting - GitHub Theme (Dark)
-     Uses VS Code's body class for theme detection
-     
-     NOTE: Colors are intentionally hardcoded for consistent
-     syntax highlighting. Dark theme variants adjust brightness
-     for better contrast and visibility in dark themes.
-     ============================================ */
-  
-  .vscode-dark .code-block-highlighted,
-  .vscode-high-contrast .code-block-highlighted {
-    background-color: #161b22;
-    border-color: #30363d;
-  }
-  
-  .vscode-dark .code-block-highlighted .hljs-doctag,
-  .vscode-dark .code-block-highlighted .hljs-keyword,
-  .vscode-dark .code-block-highlighted .hljs-meta .hljs-keyword,
-  .vscode-dark .code-block-highlighted .hljs-template-tag,
-  .vscode-dark .code-block-highlighted .hljs-template-variable,
-  .vscode-dark .code-block-highlighted .hljs-type,
-  .vscode-dark .code-block-highlighted .hljs-variable.language_ {
+
+  .code-block-highlighted .token.keyword,
+  .code-block-highlighted .token.atrule,
+  .code-block-highlighted .token.important,
+  .code-block-highlighted .token.rule {
     color: #ff7b72;
   }
-  
-  .vscode-dark .code-block-highlighted .hljs-title,
-  .vscode-dark .code-block-highlighted .hljs-title.class_,
-  .vscode-dark .code-block-highlighted .hljs-title.class_.inherited__,
-  .vscode-dark .code-block-highlighted .hljs-title.function_ {
-    color: #d2a8ff;
-  }
-  
-  .vscode-dark .code-block-highlighted .hljs-attr,
-  .vscode-dark .code-block-highlighted .hljs-attribute,
-  .vscode-dark .code-block-highlighted .hljs-literal,
-  .vscode-dark .code-block-highlighted .hljs-meta,
-  .vscode-dark .code-block-highlighted .hljs-number,
-  .vscode-dark .code-block-highlighted .hljs-operator,
-  .vscode-dark .code-block-highlighted .hljs-variable,
-  .vscode-dark .code-block-highlighted .hljs-selector-attr,
-  .vscode-dark .code-block-highlighted .hljs-selector-class,
-  .vscode-dark .code-block-highlighted .hljs-selector-id {
-    color: #79c0ff;
-  }
-  
-  .vscode-dark .code-block-highlighted .hljs-regexp,
-  .vscode-dark .code-block-highlighted .hljs-string,
-  .vscode-dark .code-block-highlighted .hljs-meta .hljs-string {
+
+  .code-block-highlighted .token.string,
+  .code-block-highlighted .token.attr-value,
+  .code-block-highlighted .token.regex,
+  .code-block-highlighted .token.char,
+  .code-block-highlighted .token.url,
+  .code-block-highlighted .token.inserted {
     color: #a5d6ff;
   }
-  
-  .vscode-dark .code-block-highlighted .hljs-built_in,
-  .vscode-dark .code-block-highlighted .hljs-symbol {
+
+  .code-block-highlighted .token.number,
+  .code-block-highlighted .token.boolean,
+  .code-block-highlighted .token.constant,
+  .code-block-highlighted .token.symbol,
+  .code-block-highlighted .token.parameter {
+    color: #79c0ff;
+  }
+
+  .code-block-highlighted .token.function,
+  .code-block-highlighted .token.function-variable,
+  .code-block-highlighted .token.builtin {
+    color: #d2a8ff;
+  }
+
+  .code-block-highlighted .token.class-name,
+  .code-block-highlighted .token.maybe-class-name,
+  .code-block-highlighted .token.known-class-name,
+  .code-block-highlighted .token.imports,
+  .code-block-highlighted .token.namespace {
     color: #ffa657;
   }
-  
-  .vscode-dark .code-block-highlighted .hljs-comment,
-  .vscode-dark .code-block-highlighted .hljs-code,
-  .vscode-dark .code-block-highlighted .hljs-formula {
-    color: #8b949e;
-  }
-  
-  .vscode-dark .code-block-highlighted .hljs-name,
-  .vscode-dark .code-block-highlighted .hljs-quote,
-  .vscode-dark .code-block-highlighted .hljs-selector-tag,
-  .vscode-dark .code-block-highlighted .hljs-selector-pseudo {
+
+  .code-block-highlighted .token.tag,
+  .code-block-highlighted .token.selector,
+  .code-block-highlighted .token.deleted,
+  .code-block-highlighted .token.property,
+  .code-block-highlighted .token.property-access {
     color: #7ee787;
   }
-  
-  .vscode-dark .code-block-highlighted .hljs-subst {
-    color: #c9d1d9;
+
+  .code-block-highlighted .token.attr-name,
+  .code-block-highlighted .token.variable {
+    color: #ffa657;
   }
-  
-  .vscode-dark .code-block-highlighted .hljs-section {
-    color: #1f6feb;
+
+  .code-block-highlighted .token.bold {
     font-weight: bold;
   }
-  
-  .vscode-dark .code-block-highlighted .hljs-bullet {
-    color: #f2cc60;
-  }
-  
-  .vscode-dark .code-block-highlighted .hljs-emphasis {
-    color: #c9d1d9;
+
+  .code-block-highlighted .token.italic {
     font-style: italic;
   }
-  
-  .vscode-dark .code-block-highlighted .hljs-strong {
-    color: #c9d1d9;
+
+  /* ============================================
+     Atom One Dark — overrides Prism tokens when our
+     obsidian-dark theme is active. Colors match the VS
+     Code "Atom One Dark" theme exactly.
+
+       bg        #282c34
+       text      #abb2bf
+       comment   #5c6370 italic
+       keyword   #c678dd (purple)
+       string    #98c379 (green)
+       number    #d19a66 (orange)
+       function  #61afef (blue)
+       class     #e5c07b (yellow)
+       property  #e06c75 (red)
+       operator  default (light gray)
+     ============================================ */
+  body[data-theme="obsidian-dark"] .code-block-highlighted {
+    background-color: #282c34;
+    border-color: #3a3f4b;
+    color: #abb2bf;
+  }
+
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.comment,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.prolog,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.doctype,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.cdata {
+    color: #5c6370;
+    font-style: italic;
+  }
+
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.punctuation,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.operator {
+    color: #abb2bf;
+  }
+
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.keyword,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.atrule,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.important,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.rule {
+    color: #c678dd;
+  }
+
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.string,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.attr-value,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.regex,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.char,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.url,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.inserted {
+    color: #98c379;
+  }
+
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.number,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.boolean,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.constant,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.parameter,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.attr-name {
+    color: #d19a66;
+  }
+
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.function,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.function-variable,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.builtin,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.symbol {
+    color: #61afef;
+  }
+
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.class-name,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.maybe-class-name,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.known-class-name,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.imports,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.namespace {
+    color: #e5c07b;
+  }
+
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.tag,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.selector,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.deleted,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.property,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.property-access,
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.variable {
+    color: #e06c75;
+  }
+
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.bold {
     font-weight: bold;
   }
-  
-  .vscode-dark .code-block-highlighted .hljs-addition {
-    color: #aff5b4;
-    background-color: #033a16;
+
+  body[data-theme="obsidian-dark"] .code-block-highlighted .token.italic {
+    font-style: italic;
   }
-  
-  .vscode-dark .code-block-highlighted .hljs-deletion {
-    color: #ffdcd7;
-    background-color: #67060c;
-  }
-  
-  .vscode-dark .code-block-highlighted .hljs-char.escape_,
-  .vscode-dark .code-block-highlighted .hljs-link,
-  .vscode-dark .code-block-highlighted .hljs-params,
-  .vscode-dark .code-block-highlighted .hljs-property,
-  .vscode-dark .code-block-highlighted .hljs-punctuation,
-  .vscode-dark .code-block-highlighted .hljs-tag {
-    color: #c9d1d9;
-  }
-  
+
   /* ============================================
      Blockquotes
      ============================================ */
@@ -674,16 +761,19 @@
   .markdown-editor table th,
   .markdown-editor table td {
     border: 1px solid var(--md-border);
-    padding: 12px 16px;
+    padding: 6px 10px;
     text-align: left;
     vertical-align: top;
-    min-width: 100px;
+    min-width: 60px;
     position: relative; /* Required for absolute positioned resize handles */
   }
-  
+
   .markdown-editor table th {
     background-color: var(--md-subtle-bg);
     font-weight: 600;
+    /* Header row keeps a bit more vertical breathing room than
+       data cells — matches Obsidian's visual hierarchy. */
+    padding: 10px 10px;
     border-bottom: 2px solid var(--md-border);
   }
   
