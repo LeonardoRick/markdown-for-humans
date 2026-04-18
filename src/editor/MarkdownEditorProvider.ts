@@ -348,6 +348,30 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     // lastWebviewContent, which caused the 'ready' handler's
     // updateWebview to skip (no-op), leaving the panel blank on startup.
 
+    // Forward "editor is now keyboard-focused" signal to the webview.
+    // `onDidChangeViewState.active` is the reliable signal: it flips
+    // true only when the user actually focuses this panel (Ctrl+1,
+    // tab click) — NOT when it's visible-but-not-focused. A 30ms
+    // debounce suppresses transient active:true → active:false
+    // flickers that happen when VS Code briefly marks a panel active
+    // during group-switch animations; Ctrl+1 / tab click stay active
+    // past the delay, so the focusEditor message only fires for real
+    // user activations.
+    let pendingFocusTimeout: ReturnType<typeof setTimeout> | null = null;
+    const viewStateSubscription = webviewPanel.onDidChangeViewState(e => {
+      if (pendingFocusTimeout) {
+        clearTimeout(pendingFocusTimeout);
+        pendingFocusTimeout = null;
+      }
+      if (!e.webviewPanel.active) return;
+      pendingFocusTimeout = setTimeout(() => {
+        pendingFocusTimeout = null;
+        if (webviewPanel.active) {
+          void webviewPanel.webview.postMessage({ type: 'focusEditor' });
+        }
+      }, 30);
+    });
+
     // Listen for configuration changes and update webview
     const configChangeSubscription = vscode.workspace.onDidChangeConfiguration(e => {
       if (
@@ -383,6 +407,11 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     webviewPanel.onDidDispose(() => {
       changeDocumentSubscription.dispose();
       configChangeSubscription.dispose();
+      viewStateSubscription.dispose();
+      if (pendingFocusTimeout) {
+        clearTimeout(pendingFocusTimeout);
+        pendingFocusTimeout = null;
+      }
       // Clean up pending edits tracking for this document
       this.pendingEdits.delete(document.uri.toString());
       this.lastWebviewContent.delete(document.uri.toString());
@@ -438,7 +467,34 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       skipResizeWarning: skipWarning,
       imagePath: imagePath,
       imagePathBase: imagePathBase,
+      // Tell the webview whether its tab is in preview mode (italic
+      // title, set by Explorer arrow-nav / single-click). When true,
+      // the editor skips autofocus + window-focus stealing so the
+      // user's cursor stays in the Explorer.
+      isPreview: this.isTabPreview(document.uri),
     });
+  }
+
+  /**
+   * Find the custom-editor tab for this URI and return whether it's
+   * in preview mode. Preview tabs are opened by Explorer arrow-nav
+   * or single-click and should not steal keyboard focus.
+   */
+  private isTabPreview(uri: vscode.Uri): boolean {
+    const target = uri.toString();
+    for (const group of vscode.window.tabGroups.all) {
+      for (const tab of group.tabs) {
+        const input = tab.input;
+        if (
+          input instanceof vscode.TabInputCustom &&
+          input.viewType === 'markdownForHumans.editor' &&
+          input.uri.toString() === target
+        ) {
+          return tab.isPreview;
+        }
+      }
+    }
+    return false;
   }
 
   /**

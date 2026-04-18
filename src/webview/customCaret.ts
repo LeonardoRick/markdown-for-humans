@@ -15,7 +15,15 @@
 const CARET_WIDTH_PX = 3;
 const BLINK_MS = 530; // VS Code default
 
-export function initCustomCaret(): { refresh: () => void; destroy: () => void } {
+interface FallbackCoords {
+  left: number;
+  top: number;
+  height: number;
+}
+
+export function initCustomCaret(
+  getFallbackCoords?: () => FallbackCoords | null
+): { refresh: () => void; destroy: () => void } {
   // Overlay element
   const caret = document.createElement('div');
   caret.id = 'custom-caret';
@@ -54,50 +62,96 @@ export function initCustomCaret(): { refresh: () => void; destroy: () => void } 
   }
 
   function update() {
+    // Try the DOM-native selection first (fast, accurate for typed
+    // positions). When it's empty — which happens after rapid focus
+    // transitions (Ctrl+1 repeat, Ctrl+0 ↔ Ctrl+N) because VS Code
+    // clears the iframe's DOM selection even though ProseMirror's
+    // state still has one — fall back to coords from ProseMirror.
+    let left = 0;
+    let top = 0;
+    let height = 0;
+    let haveRect = false;
+    let usedFallback = false;
+
     const sel = window.getSelection();
-    if (!sel || !sel.isCollapsed || sel.rangeCount === 0) {
-      caret.style.display = 'none';
-      visible = false;
-      return;
-    }
-
-    const range = sel.getRangeAt(0);
-    let rect = range.getBoundingClientRect();
-
-    // Collapsed ranges at text-node boundaries sometimes return zero —
-    // fall back to parent element's rect to get the line position.
-    if (rect.height === 0) {
-      const node = range.startContainer;
-      const el =
-        node.nodeType === Node.ELEMENT_NODE
-          ? (node as Element)
-          : (node as Text).parentElement;
-      if (el) {
-        const elRect = el.getBoundingClientRect();
-        const lh = parseFloat(getComputedStyle(el).lineHeight) || 20;
-        rect = new DOMRect(elRect.left, elRect.top, 0, lh);
+    if (sel && sel.isCollapsed && sel.rangeCount > 0) {
+      const range = sel.getRangeAt(0);
+      const rect = range.getBoundingClientRect();
+      if (rect.height > 0) {
+        left = rect.left;
+        top = rect.top;
+        height = rect.height;
+        haveRect = true;
+      } else {
+        // Collapsed range at text-node boundary — use parent element.
+        const node = range.startContainer;
+        const el =
+          node.nodeType === Node.ELEMENT_NODE
+            ? (node as Element)
+            : (node as Text).parentElement;
+        if (el) {
+          const elRect = el.getBoundingClientRect();
+          const lh = parseFloat(getComputedStyle(el).lineHeight) || 20;
+          left = elRect.left;
+          top = elRect.top;
+          height = lh;
+          haveRect = true;
+        }
       }
     }
 
-    if (rect.height === 0) {
+    if (!haveRect && getFallbackCoords) {
+      const fb = getFallbackCoords();
+      if (fb) {
+        left = fb.left;
+        top = fb.top;
+        height = fb.height;
+        haveRect = true;
+        usedFallback = true;
+      }
+    }
+
+    if (!haveRect || height === 0) {
       caret.style.display = 'none';
       visible = false;
       return;
     }
 
-    // Only show the custom caret when the editor has focus — otherwise
-    // we'd see a blinking caret even when the user is in the find bar.
-    const editor = document.querySelector('.markdown-editor');
-    const active = document.activeElement;
-    if (!editor || !editor.contains(active)) {
+    // Focus gate:
+    //  1. This specific webview iframe must have keyboard focus
+    //     (`document.hasFocus()`). Without this, open background
+    //     tabs would all blink because each keeps its own DOM
+    //     selection rooted inside its editor.
+    //  2. Selection must be rooted inside the editor. Naturally
+    //     excludes the find bar (whose input has its own selection).
+    //
+    // We don't check `document.activeElement` because VS Code
+    // sometimes pushes it to <body> during Ctrl+N focus transitions
+    // even while the iframe still has keyboard focus and the user
+    // can type normally.
+    if (!document.hasFocus()) {
       caret.style.display = 'none';
       visible = false;
       return;
     }
+    const editorEl = document.querySelector('.markdown-editor');
+    if (!editorEl) {
+      caret.style.display = 'none';
+      visible = false;
+      return;
+    }
+    if (!usedFallback) {
+      const anchorNode = window.getSelection()?.anchorNode;
+      if (!anchorNode || !editorEl.contains(anchorNode)) {
+        caret.style.display = 'none';
+        visible = false;
+        return;
+      }
+    }
 
-    caret.style.left = `${rect.left}px`;
-    caret.style.top = `${rect.top}px`;
-    caret.style.height = `${rect.height}px`;
+    caret.style.left = `${left}px`;
+    caret.style.top = `${top}px`;
+    caret.style.height = `${height}px`;
     caret.style.display = 'block';
     visible = true;
   }
@@ -120,6 +174,13 @@ export function initCustomCaret(): { refresh: () => void; destroy: () => void } 
   window.addEventListener('focus', onFocus);
   window.addEventListener('blur', onBlur);
 
+  // Self-heal: every 200ms re-evaluate caret state. Catches cases
+  // where rapid focus transitions (Ctrl+1/Ctrl+0 ping-pong) leave
+  // the DOM selection cleared and no event fires once ProseMirror
+  // finally re-applies its selection. Cheap — update() is a few
+  // DOM reads + style writes.
+  const healTimer = setInterval(update, 200);
+
   return {
     refresh() {
       update();
@@ -132,6 +193,7 @@ export function initCustomCaret(): { refresh: () => void; destroy: () => void } 
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('blur', onBlur);
       if (blinkTimer) clearInterval(blinkTimer);
+      clearInterval(healTimer);
       caret.remove();
       style.remove();
     },

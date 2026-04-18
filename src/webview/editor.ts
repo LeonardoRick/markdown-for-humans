@@ -10,6 +10,7 @@ import './codicon.css';
 
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
+import Code from '@tiptap/extension-code';
 import { Markdown } from '@tiptap/markdown';
 import { TableKit } from '@tiptap/extension-table';
 import { ListKit } from '@tiptap/extension-list';
@@ -154,6 +155,7 @@ let tableMenu: HTMLElement;
 let updateTimeout: number | null = null;
 let lastUserEditTime = 0; // Track when user last edited
 let pendingInitialContent: string | null = null; // Content from host before editor is ready
+let pendingIsPreview = false; // Preview-tab flag pinned alongside pendingInitialContent
 let hasSentReadySignal = false;
 let isDomReady = document.readyState !== 'loading';
 let outlineUpdateTimeout: number | null = null;
@@ -384,7 +386,7 @@ function setupCodeBlockLanguageBadges(editorInstance: Editor) {
 /**
  * Initialize TipTap editor with error handling
  */
-function initializeEditor(initialContent: string) {
+function initializeEditor(initialContent: string, isPreview = false) {
   try {
     if (editor) {
       console.warn('[MD4H] Editor already initialized, skipping re-init');
@@ -401,7 +403,10 @@ function initializeEditor(initialContent: string) {
 
     const editorInstance = new Editor({
       element: editorElement,
-      autofocus: 'start',
+      // Only autofocus for pinned tabs. Preview tabs (italic title,
+      // from Explorer arrow-nav / single-click) must not steal focus
+      // so the user can keep navigating from the Explorer.
+      autofocus: isPreview ? false : 'start',
       extensions: [
         // Mermaid must be before CodeBlockLowlight to intercept mermaid code blocks
         Mermaid,
@@ -417,6 +422,11 @@ function initializeEditor(initialContent: string) {
           },
           paragraph: false, // Disable default paragraph, using MarkdownParagraph instead
           codeBlock: false, // Disable default CodeBlock, using CodeBlockLowlight instead
+          // Disable the inline code mark — we register a patched Code
+          // below with excludes: '' so bold/italic can coexist with
+          // code (upstream's "_" default strips other marks, breaking
+          // `**`code`**` roundtrips).
+          code: false,
           // ListKit is registered separately to support task lists; disable StarterKit's list
           // extensions to avoid duplicate names (which can break markdown parsing, e.g. `1)` lists).
           bulletList: false,
@@ -430,6 +440,7 @@ function initializeEditor(initialContent: string) {
             depth: 100,
           },
         }),
+        Code.extend({ excludes: '' }),
         MarkdownParagraph, // Custom paragraph with empty-paragraph filtering in renderMarkdown
         CodeBlockLowlight.configure({
           lowlight,
@@ -561,21 +572,78 @@ function initializeEditor(initialContent: string) {
       editorContainer.parentElement.insertBefore(formattingToolbar, editorContainer);
     }
 
-    // When the webview iframe regains focus (Cmd+P then Esc, Ctrl+1 to
-    // focus the editor group, tab switch back, etc.) VS Code hands focus
-    // to the <body>, not to the Tiptap editor. Forward it into the editor
-    // so the user can type immediately. Only refocus if activeElement
-    // isn't already something meaningful (like the find bar input).
-    window.addEventListener('focus', () => {
-      const active = document.activeElement;
-      if (!active || active === document.body) {
+    // Focus forwarding is driven by the extension host (see
+    // MarkdownEditorProvider's onDidChangeViewState wiring). The host
+    // posts `focusEditor` only when the panel becomes truly
+    // keyboard-active (Ctrl+1, tab click) — not when it's merely
+    // visible (Explorer preview). This sidesteps the fact that
+    // window.focus + activeElement=BODY can't distinguish those cases.
+    window.addEventListener('message', event => {
+      if (event.data?.type === 'focusEditor') {
+        // When Ctrl+1 is pressed on an already-focused editor, VS
+        // Code's webview focus management runs asynchronously and
+        // lands focus on <body> AFTER our synchronous view.focus().
+        // view.hasFocus() can still return true even in that state
+        // (ProseMirror and DOM disagree), so we use the stronger
+        // "activeElement isn't inside the editor" check — same one
+        // that the keydown fallback below uses successfully when the
+        // user presses any key. Poll over ~500ms (30 frames) which
+        // is long enough to outlast any VS Code focus re-assignment.
+        const editorDom = editorInstance.view.dom;
+        const focusLost = () =>
+          document.activeElement !== editorDom &&
+          !editorDom.contains(document.activeElement);
+        const tryFocus = (framesLeft: number) => {
+          if (focusLost()) {
+            editorInstance.view.focus();
+          }
+          customCaret.refresh();
+          if (focusLost() && framesLeft > 0) {
+            requestAnimationFrame(() => tryFocus(framesLeft - 1));
+          }
+        };
+        tryFocus(30);
+      }
+    });
+
+    // Fallback safety net: if the webview panel was already active
+    // when the user switched to it (no viewState transition, so no
+    // focusEditor message), body still has keyboard focus. The
+    // first keystroke that arrives on body gets redirected to the
+    // Tiptap editor so the user can type immediately. Gated on
+    // `pastInitialRender` so iframe-init keystrokes (which shouldn't
+    // happen but hypothetically could) don't steal focus from
+    // Explorer when the user was just arrow-navving.
+    let pastInitialRender = false;
+    setTimeout(() => {
+      pastInitialRender = true;
+    }, 400);
+    document.addEventListener('keydown', () => {
+      if (!pastInitialRender) return;
+      if (document.activeElement === document.body) {
         editorInstance.view.focus();
+        requestAnimationFrame(() => customCaret.refresh());
       }
     });
 
     // Wider blue cursor overlay — hides the native 1px caret and renders
     // a 3px fixed-position bar at the cursor position.
-    initCustomCaret();
+    // The fallback uses ProseMirror's selection state to position the
+    // caret when window.getSelection() is empty — covers rapid focus
+    // transitions (Ctrl+1 repeat, Ctrl+0 ↔ Ctrl+N) where VS Code
+    // clears the iframe's DOM selection but ProseMirror still knows
+    // where the cursor should be.
+    const customCaret = initCustomCaret(() => {
+      const view = editorInstance.view;
+      if (!view || !view.hasFocus()) return null;
+      const pos = view.state.selection.head;
+      const coords = view.coordsAtPos(pos);
+      return {
+        left: coords.left,
+        top: coords.top,
+        height: coords.bottom - coords.top,
+      };
+    });
 
     // Track editor focus state for toolbar and keep toolbar enabled while interacting with it
     const editorDom = editorInstance.view.dom;
@@ -710,21 +778,28 @@ function initializeEditor(initialContent: string) {
       }
 
       // Cmd/Ctrl+G: next match. If the overlay isn't open, open it.
-      // Shift+Cmd/Ctrl+G: previous match — but ONLY when the overlay is
-      // already visible. Otherwise let the event propagate so VS Code's
-      // native Shift+Cmd+G (Source Control view) can handle it.
+      // Shift+Cmd/Ctrl+G when overlay visible: previous match. When
+      // overlay is NOT visible: forward to VS Code's Source Control
+      // view. We can't just `return` without preventDefault — the
+      // webview iframe swallows the event before VS Code's keybinding
+      // layer sees it, so we must forward explicitly (same reason
+      // SHORTCUT_FORWARDS exists for git.openChange etc.).
       if (isMod && e.key.toLowerCase() === 'g') {
         if (!editor) return;
+        e.preventDefault();
+        e.stopPropagation();
         if (e.shiftKey) {
-          if (!isSearchVisible()) return; // let VS Code handle it
-          e.preventDefault();
-          e.stopPropagation();
-          searchPrevious(editor);
+          if (isSearchVisible()) {
+            searchPrevious(editor);
+          } else {
+            vscode.postMessage({
+              type: 'runVSCodeCommand',
+              commandId: 'workbench.view.scm',
+            });
+          }
           return;
         }
         // Non-shift: open overlay if closed, else next match
-        e.preventDefault();
-        e.stopPropagation();
         if (!isSearchVisible()) {
           showSearchOverlay(editor);
         } else {
@@ -946,10 +1021,12 @@ window.addEventListener('message', (event: MessageEvent) => {
         }
         // Initialize editor with first payload to seed undo history correctly
         if (!editor) {
+          const isPreview = typeof message.isPreview === 'boolean' ? message.isPreview : false;
           if (isDomReady) {
-            initializeEditor(message.content);
+            initializeEditor(message.content, isPreview);
           } else {
             pendingInitialContent = message.content;
+            pendingIsPreview = isPreview;
           }
           return;
         }
@@ -1417,7 +1494,7 @@ if (document.readyState === 'loading') {
     signalReady();
 
     if (!editor && pendingInitialContent !== null) {
-      initializeEditor(pendingInitialContent);
+      initializeEditor(pendingInitialContent, pendingIsPreview);
       pendingInitialContent = null;
     }
   });
@@ -1425,7 +1502,7 @@ if (document.readyState === 'loading') {
   isDomReady = true;
   signalReady();
   if (!editor && pendingInitialContent !== null) {
-    initializeEditor(pendingInitialContent);
+    initializeEditor(pendingInitialContent, pendingIsPreview);
     pendingInitialContent = null;
   }
 }

@@ -70,8 +70,41 @@ export function getEditorMarkdownForSync(editor: Editor): string {
 
   try {
     const normalizedJson = stripEmptyDocParagraphsFromJson(editor.getJSON());
-    return markdownManager.serialize(normalizedJson);
+    return fixBoldCodeSerialization(markdownManager.serialize(normalizedJson));
   } catch {
     return getFallbackMarkdown();
   }
+}
+
+/**
+ * Post-process serializer output for bold/link vs code bugs.
+ *
+ * Pattern 1 — bold closes before an adjacent code span:
+ *   Input (serializer output):  **If **`CODE`:
+ *   User intent (source):       **If `CODE`**:
+ * Gated on a trailing space before `**`, which is the telltale
+ * serializer artifact; a normal `**bold**` doesn't have that so the
+ * rule won't mis-fire on a legit separate bold + code pair.
+ *
+ * Pattern 2 — bold-wrapping-code gets flipped, ending as a code
+ * span with literal asterisks inside:
+ *   Input (serializer output):  `**dots/**`
+ *   User intent (source):       **`dots/`**
+ * Matches `` `**X**` `` exactly — code that both starts and ends
+ * with `**` is almost certainly a mis-serialized bold-code combo.
+ *
+ * Pattern 3 — link-wrapping-code gets flipped, ending as a code
+ * span containing literal [text](url) syntax:
+ *   Input (serializer output):  `[file.md](path)`
+ *   User intent (source):       [`file.md`](path)
+ * A code span whose entire content is a well-formed markdown link
+ * is almost certainly a mis-serialized link+code combo — a legit
+ * code span documenting markdown link syntax is rare, and users
+ * writing such docs typically escape the brackets.
+ */
+export function fixBoldCodeSerialization(markdown: string): string {
+  return markdown
+    .replace(/\*\*([^*\n]*?)\s+\*\*(`[^`\n]+`)/g, '**$1 $2**')
+    .replace(/`\*\*([^`\n]+?)\*\*`/g, '**`$1`**')
+    .replace(/`\[([^\]\n]+)\]\(([^)\n]+)\)`/g, '[`$1`]($2)');
 }
